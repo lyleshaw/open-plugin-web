@@ -1,5 +1,7 @@
+/* eslint-disable react/jsx-no-undef */
 import { Index, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { useThrottleFn } from 'solidjs-use'
+import { v4 as uuids4 } from 'uuid'
 import IconClear from './icons/Clear'
 import MessageItem from './MessageItem'
 import SystemRoleSettings from './SystemRoleSettings'
@@ -12,13 +14,26 @@ export default () => {
   const [systemRoleEditing, setSystemRoleEditing] = createSignal(false)
   const [messageList, setMessageList] = createSignal<ChatMessage[]>([])
   const [currentError, setCurrentError] = createSignal<ErrorMessage>()
+  const [currentConversation, setCurrentConversation] = createSignal('')
   const [currentAssistantMessage, setCurrentAssistantMessage] = createSignal('')
-  const [currentPlugin, setCurrentPlugin] = createSignal('')
-  const [currentPluginReq, setCurrentPluginReq] = createSignal('')
-  const [currentPluginResp, setCurrentPluginResp] = createSignal('')
+  const [selectedPlugin, setSelectedPlugin] = createSignal('')
+  const [currentPlugin, setCurrentPlugin] = createSignal<string[]>([])
   const [loading, setLoading] = createSignal(false)
   const [controller, setController] = createSignal<AbortController>(null)
   const [isStick, setStick] = createSignal(false)
+
+
+  const setPlugins = (data) => {
+    const pluginNames = data.data.map(p => p.plugin_name)
+    console.log('pluginNames', pluginNames)
+    setCurrentPlugin(pluginNames)
+  }
+
+  createEffect(() => {
+    fetch('https://open-plugin-api.aireview.tech/api/plugins')
+      .then(res => res.json())
+      .then(data => setPlugins(data))
+  })
 
   createEffect(() => (isStick() && smoothToBottom()))
 
@@ -56,7 +71,7 @@ export default () => {
     isStick() ? localStorage.setItem('stickToBottom', 'stick') : localStorage.removeItem('stickToBottom')
   }
 
-  const handleButtonClick = async() => {
+  const handleButtonClick = async () => {
     const inputValue = inputRef.value
     if (!inputValue)
       return
@@ -81,7 +96,7 @@ export default () => {
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' })
   }
 
-  const requestWithLatestMessage = async() => {
+  const requestWithLatestMessage = async () => {
     setLoading(true)
     setCurrentAssistantMessage('')
     setCurrentError(null)
@@ -96,15 +111,18 @@ export default () => {
           content: currentSystemRoleSettings(),
         })
       }
+      if (!currentConversation())
+        setCurrentConversation(uuids4())
+
       const response = await fetch('https://open-plugin-api.aireview.tech/api/chat', {
         headers: {
           'Content-Type': 'application/json',
         },
         method: 'POST',
         body: JSON.stringify({
-          conversation_id: '4d35b9a2-e370-4393-a9ca-6cbed142d929',
+          conversation_id: currentConversation(),
           prompt: requestMessageList?.[requestMessageList.length - 1]?.content || '',
-          plugin_names: ['search_plugin'],
+          plugin_names: currentPlugin(),
           chat_model: 'Claude-v1-100k',
         }),
         signal: controller.signal,
@@ -139,28 +157,38 @@ export default () => {
             if (lines[i].startsWith('event:plugin_selected')) {
               const line = lines[i + 1]
               const data = line.substring(5)
-              setCurrentPlugin(data)
+              // setCurrentPlugin(data)
+              const plugin = `Plugin: \`\`\`${data}\`\`\`` + '\n'
+              setCurrentAssistantMessage(currentAssistantMessage() + plugin)
               i++
               continue
             }
             if (lines[i].startsWith('event:plugin_requested')) {
               const line = lines[i + 1]
               const data = line.substring(5)
-              setCurrentPluginReq(data)
+              // setCurrentPluginReq(data)
+              const splitData = data.split(/(.{50})/).filter(Boolean)
+              console.log('splitData', splitData)
+              const req = `Plugin: \`\`\`json${splitData.join('\n')}\`\`\`` + '\n'
+              // const req = `Plugin Req: \`\`\`${data}\`\`\`` + '\n'
+              setCurrentAssistantMessage(currentAssistantMessage() + req)
               i++
               continue
             }
             if (lines[i].startsWith('event:plugin_responsed')) {
               const line = lines[i + 1]
               const data = line.substring(5)
-              setCurrentPluginResp(data)
+              // setCurrentPluginResp(data)
+              const resp = `Plugin Resp: \`\`\`${data}\`\`\`` + '\n'
+              setCurrentAssistantMessage(currentAssistantMessage() + resp)
+
               i++
               continue
             }
             if (lines[i].startsWith('event:completion')) {
               const line = lines[i + 1]
               const data = JSON.parse(line.substring(5))
-              setCurrentAssistantMessage(data.completion)
+              setCurrentAssistantMessage(currentAssistantMessage() + data.delta)
               i++
               continue
             }
@@ -202,6 +230,7 @@ export default () => {
     inputRef.style.height = 'auto'
     setMessageList([])
     setCurrentAssistantMessage('')
+    setCurrentConversation('')
     setCurrentError(null)
   }
 
@@ -240,6 +269,9 @@ export default () => {
         currentSystemRoleSettings={currentSystemRoleSettings}
         setCurrentSystemRoleSettings={setCurrentSystemRoleSettings}
       />
+      <select value={selectedPlugin()} onChange={e => setSelectedPlugin(e.target.nodeValue)}>
+        {currentPlugin().map(p => <option value={p} key={p}>{p}</option>)}
+      </select>
       <Index each={messageList()}>
         {(message, index) => (
           <MessageItem
@@ -250,31 +282,13 @@ export default () => {
           />
         )}
       </Index>
-      {currentPlugin() && (
-        <MessageItem
-          role="system"
-          message={currentPlugin}
-        />
-      )}
-      {currentPluginReq() && (
-        <MessageItem
-          role="system"
-          message={currentPluginReq}
-        />
-      )}
-      {currentPluginReq() && (
-        <MessageItem
-          role="system"
-          message={currentPluginResp}
-        />
-      )}
       {currentAssistantMessage() && (
         <MessageItem
           role="assistant"
           message={currentAssistantMessage}
         />
       )}
-      { currentError() && <ErrorMessageItem data={currentError()} onRetry={retryLastFetch} /> }
+      {currentError() && <ErrorMessageItem data={currentError()} onRetry={retryLastFetch} />}
       <Show
         when={!loading()}
         fallback={() => (
